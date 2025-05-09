@@ -138,6 +138,12 @@ struct st_playerData{
 	struct st_levelsData levelsData;
 };
 
+struct st_playersData{
+	struct st_playerData* items;
+	unsigned int count;
+	unsigned int capacity;
+};
+
 static struct st_packedStringArray st_splitLine( const unsigned char* line, const char* delimiter ) 
 {
 	assert( line && delimiter );
@@ -284,10 +290,47 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 		st_daAppend( (playerData->levelsData), currentLevel );
 }
 
+void st_loadUserMetrics( struct st_fileAccess *userMetricsFile, struct st_playersData* out )
+{
+	// skip first line
+	st_readLine( userMetricsFile );
+
+	unsigned char* line = NULL;
+	while ( ( line = st_readLine( userMetricsFile ) ) )
+	{
+		struct st_packedStringArray cols = st_splitLine( line, "," );
+		assert( cols.count == 10 && "User metrics csv has ten columns" );
+
+		unsigned char* playerName = cols.items[0];
+
+		struct st_playerData* playerData = NULL;
+		for ( unsigned int i = 0; i < out->count; ++i )
+			if ( strcmp( (const char*)out->items[i].name, (const char*)playerName ) == 0 )
+			{
+				playerData = &out->items[i];
+				break;
+			}
+		assert( playerData );
+
+		playerData->relatedness = atof( (const char*) cols.items[1] );
+		playerData->competence = atof( (const char*) cols.items[2] );
+		playerData->immersion = atof( (const char*) cols.items[3] );
+		playerData->fun = atof( (const char*) cols.items[4] );
+		playerData->autonomy = atof( (const char*) cols.items[5] );
+		playerData->physical = atof( (const char*) cols.items[6] );
+		playerData->analytical = atof( (const char*) cols.items[7] );
+		playerData->socioemotional = atof( (const char*) cols.items[8] );
+		playerData->insight = atof( (const char*) cols.items[9] );
+		
+		free( line );
+		line = NULL;
+	}
+}
+
 static void st_printUserDataDebug( struct st_playerData playerData )
 {
 	fprintf(stdout, "----------------------------------------\n");
-	fprintf(stdout, "User: %s", playerData.name );
+	fprintf(stdout, "User: %s\n", playerData.name );
 	fprintf(stdout, "relatedness: %f, competence: %f, immersion: %f, fun: %f, autonomy: %f\n",
 			playerData.relatedness,
 			playerData.competence, 
@@ -305,7 +348,6 @@ static void st_printUserDataDebug( struct st_playerData playerData )
 		fprintf(stdout, "level: %s with %u position points\n", levelData.name, levelData.positions.count);
 	}
 	fprintf(stdout, "----------------------------------------\n");
-
 }
 
 static void st_loadCsv()
@@ -314,34 +356,12 @@ static void st_loadCsv()
 	static const char *csvDir =  "csv";
 	assert( DirectoryExists(csvDir) );
 
-	// load player metrics
-	static const char *usersMetricsFile = "csv/player_metrics.csv";
-	assert( FileExists(usersMetricsFile) );
-	int usersMetricsDataSize;
-	unsigned char *usersMetricsData;
-	usersMetricsData = LoadFileData( usersMetricsFile, &usersMetricsDataSize );
-
-	// process line by line
-	assert( usersMetricsData && usersMetricsDataSize );
-	struct st_fileAccess userMetricsFile = {
-		.data = usersMetricsData,
-		.count = usersMetricsDataSize,
-		.offset = 0u
-	};
-	unsigned char* line = NULL;
-	while ( ( line = st_readLine( &userMetricsFile ) ) )
-	{
-		fprintf(stdout, "%s", line);
-
-		free( line );
-		line = NULL;
-	}
-	UnloadFileData( usersMetricsData );
-
 	// load users gameplay data
 	static const char *usersDir = "csv/users";
 	FilePathList userFiles;
 	userFiles = LoadDirectoryFiles( usersDir );
+
+	struct st_playersData playersData = {0};
 
 	for ( unsigned int fileIdx = 0; fileIdx < userFiles.count; ++fileIdx )
 	{
@@ -352,10 +372,29 @@ static void st_loadCsv()
 		playerData.name = malloc( playerNameSize + 1 );
 		strcpy_s( (char*)playerData.name, playerNameSize + 1, playerName );
 		st_loadUser( playerName, filePath, &playerData );
-		st_printUserDataDebug( playerData );
+		st_daAppend( playersData, playerData );
 	}
 
+	// load player metrics
+	static const char *usersMetricsFile = "csv/player_metrics.csv";
+	assert( FileExists(usersMetricsFile) );
+	int usersMetricsDataSize;
+	unsigned char *usersMetricsData;
+	usersMetricsData = LoadFileData( usersMetricsFile, &usersMetricsDataSize );
+
+	assert( usersMetricsData && usersMetricsDataSize );
+	struct st_fileAccess userMetricsFile = {
+		.data = usersMetricsData,
+		.count = usersMetricsDataSize,
+		.offset = 0u
+	};
+	st_loadUserMetrics( &userMetricsFile, &playersData );
+	UnloadFileData( usersMetricsData );
+
 	UnloadDirectoryFiles(userFiles);
+
+	for ( unsigned int i = 0; i < playersData.count; ++i )
+		st_printUserDataDebug( playersData.items[i] );
 }
 
 int main(void)
