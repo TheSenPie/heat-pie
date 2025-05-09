@@ -1,4 +1,5 @@
 #include "raylib.h"
+#include "rlgl.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -350,7 +351,7 @@ static void st_printUserDataDebug( struct st_playerData playerData )
 	fprintf(stdout, "----------------------------------------\n");
 }
 
-static void st_loadCsv()
+static struct st_playersData st_loadCsv()
 {
 	// csv folder
 	static const char *csvDir =  "csv";
@@ -395,18 +396,39 @@ static void st_loadCsv()
 
 	for ( unsigned int i = 0; i < playersData.count; ++i )
 		st_printUserDataDebug( playersData.items[i] );
+
+	return playersData;
 }
+
+struct st_pointDataFilter {
+	// ranges are inclusive
+	struct st_vector2d relatednessRange;
+	struct st_vector2d competenceRange;
+	struct st_vector2d immersionRange;
+	struct st_vector2d funRange;
+	struct st_vector2d autonomyRange;
+	struct st_vector2d physicalRange;
+	struct st_vector2d analyticalRange;
+	struct st_vector2d socioemotionalRange;
+	struct st_vector2d insightRange;
+
+	unsigned char* levelName;
+};
+
+#define MAX_POINTS 100000u
 
 int main(void)
 {
 	const unsigned int screenWidth = 800u;
-	const unsigned int screenHeight = 450u;
+	const unsigned int screenHeight = 640u;
 
 	InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window" );
 
 	SetTargetFPS( 60u );
 
-	st_loadCsv();
+	struct st_playersData playersData = st_loadCsv();
+
+	unsigned int pointsSSBO = rlLoadShaderBuffer(MAX_POINTS * sizeof(struct st_vector2d), NULL, RL_DYNAMIC_COPY);	
 
 	// Main game loop
 	while ( !WindowShouldClose() )

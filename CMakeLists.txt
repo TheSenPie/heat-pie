@@ -6,14 +6,18 @@ add_library( raylib SHARED IMPORTED )
 
 set_target_properties( raylib 
 	PROPERTIES LINKER_LANGUAGE C
-	IMPORTED_LOCATION raylib.dll 
-	IMPORTED_IMPLIB raylibdll.lib ) 
+	IMPORTED_LOCATION raylib.lib 
+	IMPORTED_IMPLIB raylib.lib ) 
 
 add_executable( ${PROJECT_NAME} src/hello.c )
 
 target_include_directories( ${PROJECT_NAME} PUBLIC raylib-5.5_win64_msvc16/include/ )
 
-target_link_libraries( ${PROJECT_NAME} raylib )
+if(WIN32)
+	target_link_libraries( ${PROJECT_NAME} raylib winmm gdi32 )
+else()
+	target_link_libraries( ${PROJECT_NAME} raylib )
+endif()
 
 #add_custom_command( TARGET ${PROJECT_NAME} POST_BUILD
 #	COMMAND ${CMAKE_COMMAND} -E copy 
