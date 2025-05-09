@@ -20,8 +20,17 @@ struct st_numbers
 	unsigned int capacity;
 };
 
+struct st_vector2d;
+struct st_packedPositionArray
+{
+	struct st_vector2d* items;
+	unsigned int count;
+	unsigned int capacity;
+};
+
 struct st_levelData;
-struct st_levels{
+struct st_levelsData
+{
 	struct st_levelData* items;
 	unsigned int count;
 	unsigned int capacity;
@@ -37,19 +46,35 @@ struct st_levels{
 	xs.items[ xs.count++ ]  = x;\
 	} while ( 0 )
 
-void st_daUnloadPackedStringArray( struct st_packedStringArray arr )
+void st_daUnloadPackedStringArray( struct st_packedStringArray* arr )
 {
-	if ( arr.items != NULL )
+	assert( arr );
+
+	if ( arr->items != NULL )
 	{
-		for ( unsigned int i = 0; i < arr.count; ++i )
+		for ( unsigned int i = 0; i < arr->count; ++i )
 		{
-			free( arr.items[ i ] );
-			arr.items[ i ] = NULL;
+			free( arr->items[ i ] );
+			arr->items[ i ] = NULL;
 		}
-		free( arr.items );
-		arr.items = NULL;
-		arr.count = 0;
-		arr.capacity = 0;
+		free( arr->items );
+		arr->items = NULL;
+		arr->count = 0;
+		arr->capacity = 0;
+	}
+}
+
+void st_daUnloadPackedPositionArray( struct st_packedPositionArray* arr )
+{
+	assert( arr );
+
+	if ( arr->items != NULL )
+
+	{
+		free( arr->items );
+		arr->items = NULL;
+		arr->count = 0;
+		arr->capacity = 0;
 	}
 }
 
@@ -66,10 +91,40 @@ struct st_fileAccess{
 
 struct st_levelData{
 	unsigned char* name;
-	struct st_vector2d positions[];
+	struct st_packedPositionArray positions;
 };
 
-struct st_player{
+void st_unloadLevelData( struct st_levelData* data )
+{
+	assert( data );
+
+	if ( data->name != NULL )
+	{
+		free( data->name );
+		data->name = NULL;
+
+		st_daUnloadPackedPositionArray( &data->positions );
+	}
+}
+
+void st_daUnloadLevelsData( struct st_levelsData* data )
+{
+	assert( data );
+	if ( data->items != NULL )
+	{
+		for ( unsigned int i = 0; i < data->count; ++i )
+		{
+			struct st_levelData* level = &data->items[i];
+			st_unloadLevelData( level );
+		}
+		free( data->items );
+		data->items = NULL;
+		data->count = 0;
+		data->capacity = 0;
+	}
+}
+
+struct st_playerData{
 	unsigned char* name;
 	float relatedness;
 	float competence;
@@ -80,7 +135,7 @@ struct st_player{
 	float analytical;
 	float socioemotional;
 	float insight;
-	struct st_levelData* level;
+	struct st_levelsData levelsData;
 };
 
 static struct st_packedStringArray st_splitLine( const unsigned char* line, const char* delimiter ) 
@@ -152,7 +207,7 @@ static unsigned char* st_readLine( struct st_fileAccess *file )
 	return NULL;
 }
 
-static void st_loadUser( const char* name, const char* filePath )
+static void st_loadUser( const char* name, const char* filePath, struct st_playerData* playerData )
 {
 	fprintf( stdout, "Load user %s with file %s\n", name, filePath );
 	unsigned int dataSize = 0u;
@@ -165,39 +220,92 @@ static void st_loadUser( const char* name, const char* filePath )
 		.offset = 0u
 	};
 
+	struct st_levelData currentLevel = {0};
+	bool levelStart = false;
+
 	unsigned char* line = NULL;
 	unsigned int rows = 0;
-	while ( ( line = st_readLine( &userGameplayFile ) ) ) {
+	while ( ( line = st_readLine( &userGameplayFile ) ) )
+	{
 		rows++;
 
 		struct st_packedStringArray cols = st_splitLine( line, ", " );
 		assert( cols.count >= 2 && "User csv data has at least two columns" );
 
-		if ( strcmp( (const char*)cols.items[0], "[elsc]" ) == 0 )
+		const bool isLevelStatusEvent = strcmp( (const char*)cols.items[0], "[elsc]" ) == 0;
+		if (  isLevelStatusEvent && 
+			strcmp( (const char*)cols.items[3], "start" ) == 0  &&
+			!levelStart )
 		{
-			cols.items[2]; // name
-			cols.items[3]; // start/complete
+			levelStart =  true;
+			size_t nameSize = strlen( (const char*) cols.items[2] );
+			currentLevel.name = malloc( nameSize + 1 ); // name
+			strcpy_s( (char*)currentLevel.name, nameSize + 1, (const char*) cols.items[2] );
+		}
+		else if ( levelStart )
+		{
+			if ( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "start" ) == 0 )
+			{
+				fprintf(stdout, "ERR Received level:start in the middle of processing level data for %s \n", currentLevel.name );
 
-		}
-		else if ( strcmp( (const char*)cols.items[0], "[pos]" ) == 0 )
-		{
-			double x = atof( (const char*)cols.items[2] ); //x
-			double y = atof( (const char*)cols.items[3] ); //y
-			printf(" %f %f\n", x, y);
-		}
-		else if ( strcmp( (const char*)cols.items[0], "[pd]" ) == 0 )
-		{
-			// reset count or smth
+				free( currentLevel.name );
+				size_t nameSize = strlen( (const char*) cols.items[2] );
+				currentLevel.name = malloc( nameSize + 1 ); // name
+				strcpy_s( (char*)currentLevel.name, nameSize + 1, (const char*) cols.items[2] );
+
+				st_daUnloadPackedPositionArray( &currentLevel.positions );
+			}
+			if ( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "complete" ) == 0 )
+			{
+				levelStart = false;
+				st_daAppend( (playerData->levelsData), currentLevel );
+			}
+			if ( strcmp( (const char*)cols.items[0], "[pos]" ) == 0 )
+			{
+				struct st_vector2d pos = {
+					.x = atof( (const char*)cols.items[2] ),
+					.y = atof( (const char*)cols.items[3] )
+				};
+
+				st_daAppend( currentLevel.positions, pos );
+			}
 		}
 
-		st_daUnloadPackedStringArray( cols );
+		st_daUnloadPackedStringArray( &cols );
 
 		free( line );
 		line = NULL;
 	}
-	fprintf( stdout, "%s has %u rows\n", name, rows );
 
+	fprintf( stdout, "%s has %u rows\n", name, rows );
 	UnloadFileData( data );
+
+	if ( levelStart )
+		st_daAppend( (playerData->levelsData), currentLevel );
+}
+
+static void st_printUserDataDebug( struct st_playerData playerData )
+{
+	fprintf(stdout, "----------------------------------------\n");
+	fprintf(stdout, "User: %s", playerData.name );
+	fprintf(stdout, "relatedness: %f, competence: %f, immersion: %f, fun: %f, autonomy: %f\n",
+			playerData.relatedness,
+			playerData.competence, 
+			playerData.immersion,
+			playerData.fun,
+			playerData.autonomy);
+	fprintf(stdout, "physical: %f, analytical: %f, socioemotional: %f, insight: %f\n",
+			playerData.physical,
+			playerData.analytical,
+			playerData.socioemotional,
+			playerData.insight);
+	for ( unsigned int i = 0; i < playerData.levelsData.count; ++i )
+	{
+		struct st_levelData levelData = playerData.levelsData.items[i];
+		fprintf(stdout, "level: %s with %u position points\n", levelData.name, levelData.positions.count);
+	}
+	fprintf(stdout, "----------------------------------------\n");
+
 }
 
 static void st_loadCsv()
@@ -238,7 +346,13 @@ static void st_loadCsv()
 	for ( unsigned int fileIdx = 0; fileIdx < userFiles.count; ++fileIdx )
 	{
 		const char* filePath = userFiles.paths[ fileIdx ];
-		st_loadUser( GetFileNameWithoutExt( filePath ), filePath  );
+		const char* playerName = GetFileNameWithoutExt( filePath );
+		const size_t playerNameSize = strlen( playerName );
+		struct st_playerData playerData = {0};
+		playerData.name = malloc( playerNameSize + 1 );
+		strcpy_s( (char*)playerData.name, playerNameSize + 1, playerName );
+		st_loadUser( playerName, filePath, &playerData );
+		st_printUserDataDebug( playerData );
 	}
 
 	UnloadDirectoryFiles(userFiles);
