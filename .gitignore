@@ -1,1 +1,8 @@
+# ninja build files
 build/
+
+# clangd
+.cache/
+
+# vim
+**/*.swp

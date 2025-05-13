@@ -47,6 +47,13 @@ struct st_levelsData
 	xs.items[ xs.count++ ]  = x;\
 	} while ( 0 )
 
+#define st_daShrinkToFit(xs)\
+	do {\
+		assert( xs.count > 0 );\
+		xs.capacity = xs.count;\
+		xs.items = realloc( xs.items, xs.capacity * sizeof( *xs.items ) );\
+	} while ( 0 )
+
 void st_daUnloadPackedStringArray( struct st_packedStringArray* arr )
 {
 	assert( arr );
@@ -80,8 +87,8 @@ void st_daUnloadPackedPositionArray( struct st_packedPositionArray* arr )
 }
 
 struct st_vector2d{
-	double x;
-	double y;
+	float x;
+	float y;
 };
 
 struct st_fileAccess{
@@ -143,6 +150,11 @@ struct st_playersData{
 	struct st_playerData* items;
 	unsigned int count;
 	unsigned int capacity;
+};
+
+struct st_positionsSSBO{
+	struct st_packedPositionArray positions;
+	unsigned int ssboHandle;
 };
 
 static struct st_packedStringArray st_splitLine( const unsigned char* line, const char* delimiter ) 
@@ -412,10 +424,57 @@ struct st_pointDataFilter {
 	struct st_vector2d socioemotionalRange;
 	struct st_vector2d insightRange;
 
-	unsigned char* levelName;
+	const char* const levelName;
 };
 
-#define MAX_POINTS 100000u
+bool st_testPlayerMotivationAndChallenge( const struct st_playerData* const playerData, struct st_pointDataFilter pointFilter )
+{
+	return pointFilter.relatednessRange.x <= playerData->relatedness && playerData->relatedness <= pointFilter.relatednessRange.y
+	&& pointFilter.competenceRange.x <= playerData->competence && playerData->competence <= pointFilter.competenceRange.y
+	&& pointFilter.immersionRange.x <= playerData->immersion && playerData->immersion <= pointFilter.immersionRange.y
+	&& pointFilter.funRange.x <= playerData->fun && playerData->fun <= pointFilter.funRange.y
+	&& pointFilter.autonomyRange.x <= playerData->autonomy && playerData->autonomy <= pointFilter.autonomyRange.y
+	&& pointFilter.physicalRange.x <= playerData->physical && playerData->physical <= pointFilter.physicalRange.y
+	&& pointFilter.analyticalRange.x <= playerData->analytical && playerData->analytical <= pointFilter.analyticalRange.y
+	&& pointFilter.socioemotionalRange.x <= playerData->socioemotional && playerData->socioemotional <= pointFilter.socioemotionalRange.y
+	&& pointFilter.insightRange.x <= playerData->insight && playerData->insight <= pointFilter.insightRange.y;
+}
+
+// return SSBO id
+struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struct st_pointDataFilter pointFilter )
+{
+	struct st_positionsSSBO res = { 0 };
+
+	for ( unsigned int player_idx = 0; player_idx < players.count; ++player_idx )
+	{
+		const struct st_playerData* const playerData = &players.items[player_idx];
+		const bool hasMotivationAndChallenge = st_testPlayerMotivationAndChallenge( playerData, pointFilter );
+		assert( hasMotivationAndChallenge ); // TOOD: remove, only for debug
+
+		if ( hasMotivationAndChallenge )
+		{
+			const struct st_levelsData* const levelsData = &playerData->levelsData;
+
+			for ( unsigned int lvl_idx = 0; lvl_idx < levelsData->count; ++lvl_idx )
+			{
+				const struct st_levelData* const levelData = &levelsData->items[lvl_idx];
+				if ( strcmp((const char*) levelData->name, pointFilter.levelName) == 0 )
+				{
+					for ( unsigned int pos_idx = 0; pos_idx < levelData->positions.count; ++pos_idx )
+						st_daAppend( res.positions, levelData->positions.items[ pos_idx ] );
+					break;
+				}
+			}
+		}
+	}
+	fprintf( stdout, "loaded %u positions \n", res.positions.count );
+	if ( res.positions.count == 0 )
+		return res;
+
+	st_daShrinkToFit( res.positions );
+	res.ssboHandle = rlLoadShaderBuffer(res.positions.count * sizeof( *res.positions.items ), res.positions.items, RL_DYNAMIC_COPY);
+	return res;
+}
 
 int main(void)
 {
@@ -427,8 +486,29 @@ int main(void)
 	SetTargetFPS( 60u );
 
 	struct st_playersData playersData = st_loadCsv();
+	struct st_pointDataFilter pointFilter = {
+		.relatednessRange = {0.0, 1.0},
+		.competenceRange = {0.0, 1.0},
+		.immersionRange = {0.0, 1.0},
+		.funRange = {0.0, 1.0},
+		.autonomyRange = {0.0, 1.0},
+		.physicalRange = {0.0, 1.0},
+		.analyticalRange = {0.0, 1.0},
+		.socioemotionalRange = {0.0, 1.0},
+		.insightRange = {0.0, 1.0},
+		.levelName = "aries_test.tscn"
+	};
 
-	unsigned int pointsSSBO = rlLoadShaderBuffer(MAX_POINTS * sizeof(struct st_vector2d), NULL, RL_DYNAMIC_COPY);	
+	struct st_positionsSSBO positionsSSBO = st_loadPointBuffer( playersData, pointFilter );
+
+	// Load compute shader and process points to write to render buffer
+	char* heatmapLogicCode = LoadFileText( "resources/shaders/glsl430/heatmap.glsl" );
+	unsigned int heatmapLogicShader = rlCompileShader( heatmapLogicCode, RL_COMPUTE_SHADER );
+	unsigned int heatmapLogicProgram = rlLoadComputeShaderProgram( heatmapLogicShader );
+	UnloadFileText( heatmapLogicCode );
+
+	// Load fragment shader for rendering the points
+	Shader heatmapRenderShader = LoadShader( NULL, "resources/shaders/glsl430/heatmap_render.glsl" );
 
 	// Main game loop
 	while ( !WindowShouldClose() )
