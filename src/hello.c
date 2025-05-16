@@ -278,6 +278,10 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 			{
 				levelStart = false;
 				st_daAppend( (playerData->levelsData), currentLevel );
+				currentLevel.name = NULL;
+				currentLevel.positions.items = NULL;
+				currentLevel.positions.capacity = 0;
+				currentLevel.positions.count = 0;
 			}
 			if ( strcmp( (const char*)cols.items[0], "[pos]" ) == 0 )
 			{

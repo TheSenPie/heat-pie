@@ -11,6 +11,11 @@ set_target_properties( raylib
 
 add_executable( ${PROJECT_NAME} src/hello.c )
 
+if(MSVC)
+	target_compile_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
+	target_link_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
+endif()
+
 target_include_directories( ${PROJECT_NAME} PUBLIC raylib-5.5_win64_msvc16/include/ )
 
 if(WIN32)
@@ -18,6 +23,7 @@ if(WIN32)
 else()
 	target_link_libraries( ${PROJECT_NAME} raylib )
 endif()
+
 
 #add_custom_command( TARGET ${PROJECT_NAME} POST_BUILD
 #	COMMAND ${CMAKE_COMMAND} -E copy 
