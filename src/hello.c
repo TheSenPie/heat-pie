@@ -1,10 +1,34 @@
-#include "raylib.h"
-#include "rlgl.h"
-
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+
+#include "raylib.h"
+
+#if defined(PLATFORM_DESKTOP) || defined(PLATFORM_DESKTOP_SDL)
+    #if defined(GRAPHICS_API_OPENGL_ES2)
+        #include "glad_gles2.h"       // Required for: OpenGL functionality 
+        #define glGenVertexArrays glGenVertexArraysOES
+        #define glBindVertexArray glBindVertexArrayOES
+        #define glDeleteVertexArrays glDeleteVertexArraysOES
+        #define GLSL_VERSION            100
+    #else
+        #if defined(__APPLE__)
+            #define GL_SILENCE_DEPRECATION // Silence Opengl API deprecation warnings 
+            #include <OpenGL/gl3.h>     // OpenGL 3 library for OSX
+            #include <OpenGL/gl3ext.h>  // OpenGL 3 extensions library for OSX
+        #else
+            #include "glad.h"       // Required for: OpenGL functionality 
+        #endif
+        #define GLSL_VERSION            330
+    #endif
+#else   // PLATFORM_ANDROID, PLATFORM_WEB
+    #define GLSL_VERSION            100
+#endif
+
+#include "rlgl.h"
+#include "raymath.h"
 
 // Array types
 struct st_packedStringArray
@@ -89,6 +113,13 @@ void st_daUnloadPackedPositionArray( struct st_packedPositionArray* arr )
 struct st_vector2d{
 	float x;
 	float y;
+};
+
+const struct st_vector2d st_VECTOR2D_ZERO = { .x = .0f, .y = .0f };
+
+struct st_aabb{
+	struct st_vector2d topLeft;
+	struct st_vector2d bottomRight;
 };
 
 struct st_fileAccess{
@@ -367,10 +398,18 @@ static void st_printUserDataDebug( struct st_playerData playerData )
 	fprintf(stdout, "----------------------------------------\n");
 }
 
+static void st_printAABBDebug(const struct st_aabb bounds)
+{
+	fprintf(stdout, "top-left: (%f, %f)\nbottom-right: (%f, %f)\nwidth-height: (%f, %f)\n", 
+		bounds.topLeft.x, bounds.topLeft.y,
+		bounds.bottomRight.x, bounds.bottomRight.y,
+		fabsf(bounds.topLeft.x - bounds.bottomRight.x), fabsf(bounds.topLeft.y  - bounds.bottomRight.y));
+}
+
 static struct st_playersData st_loadCsv()
 {
 	// csv folder
-	static const char *csvDir =  "csv";
+	static const char *csvDir = "csv";
 	assert( DirectoryExists(csvDir) );
 
 	// load users gameplay data
@@ -444,6 +483,28 @@ bool st_testPlayerMotivationAndChallenge( const struct st_playerData* const play
 	&& pointFilter.insightRange.x <= playerData->insight && playerData->insight <= pointFilter.insightRange.y;
 }
 
+void st_findBounds( const struct st_packedPositionArray points, struct st_aabb* bounds )
+{
+	if ( points.count == 0u )
+	{
+		bounds->topLeft = st_VECTOR2D_ZERO; 
+		bounds->bottomRight = st_VECTOR2D_ZERO;
+		return;
+	}
+
+	bounds->topLeft =  points.items[0];
+	bounds->bottomRight =  points.items[0];
+
+	for ( int point_idx = 1; point_idx < points.count; ++point_idx )
+	{
+		const struct st_vector2d point = points.items[ point_idx ];
+		if ( bounds->topLeft.x > point.x ) bounds->topLeft.x = point.x;
+		if ( bounds->topLeft.y > point.y ) bounds->topLeft.y = point.y; // y points down
+		if ( bounds->bottomRight.x < point.x ) bounds->bottomRight.x = point.x;
+		if ( bounds->bottomRight.y < point.y ) bounds->bottomRight.y = point.y;
+	}
+}
+
 // return SSBO id
 struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struct st_pointDataFilter pointFilter )
 {
@@ -480,6 +541,21 @@ struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struc
 	return res;
 }
 
+
+// Unload shader storage buffer object (SSBO)
+void rlUnloadUniformBuffer(unsigned int uboId)
+{
+#if defined(GRAPHICS_API_OPENGL_43)
+    glDeleteBuffers(1, &ssboId);
+#else
+    TRACELOG(RL_LOG_WARNING, "UBO: UBO not enabled. Define GRAPHICS_API_OPENGL_43");
+#endif
+
+}
+
+#define HEATMAP_WIDTH 1080 
+#define HEATMAP_HEIGHT 1080
+
 int main(void)
 {
 	const unsigned int screenWidth = 800u;
@@ -500,10 +576,13 @@ int main(void)
 		.analyticalRange = {0.0, 1.0},
 		.socioemotionalRange = {0.0, 1.0},
 		.insightRange = {0.0, 1.0},
-		.levelName = "aries_test.tscn"
+		.levelName = "cancer_test.tscn"
 	};
 
 	struct st_positionsSSBO positionsSSBO = st_loadPointBuffer( playersData, pointFilter );
+	struct st_aabb data_bounds = {0};
+	st_findBounds( positionsSSBO.positions, &data_bounds );
+	st_printAABBDebug( data_bounds );
 
 	// Load compute shader and process points to write to render buffer
 	char* heatmapLogicCode = LoadFileText( "resources/shaders/glsl430/heatmap.glsl" );
@@ -511,20 +590,122 @@ int main(void)
 	unsigned int heatmapLogicProgram = rlLoadComputeShaderProgram( heatmapLogicShader );
 	UnloadFileText( heatmapLogicCode );
 
+	// query limitations
+	// -----------------
+	int max_compute_work_group_count[3];
+	int max_compute_work_group_size[3];
+	int max_compute_work_group_invocations;
+
+	for (int idx = 0; idx < 3; idx++) {
+		glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, idx, &max_compute_work_group_count[idx]);
+		glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, idx, &max_compute_work_group_size[idx]);
+	}
+	glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &max_compute_work_group_invocations);
+
+	puts( "OpenGL Limitations: ");
+	fprintf( stdout, "maximum number of work groups in X dimension %u\n", max_compute_work_group_count[0] );
+	fprintf( stdout, "maximum number of work groups in Y dimension %u\n", max_compute_work_group_count[1] );
+	fprintf( stdout, "maximum number of work groups in Z dimension %u\n", max_compute_work_group_count[2] );
+
+	fprintf( stdout, "maximum size of a work group in X dimension %u\n", max_compute_work_group_size[0] );
+	fprintf( stdout, "maximum size of a work group in Y dimension %u\n", max_compute_work_group_size[1] );
+	fprintf( stdout, "maximum size of a work group in Z dimension %u\n", max_compute_work_group_size[2] );
+
+	fprintf( stdout, "Number of invocations in a single local work group that may be dispatched to a compute shader %u", max_compute_work_group_invocations);
+
 	// Load fragment shader for rendering the points
-	Shader heatmapRenderShader = LoadShader( NULL, "resources/shaders/glsl430/heatmap_render.glsl" );
+	//Shader heatmapRenderShader = LoadShader( NULL, "resources/shaders/glsl430/heatmap_render.glsl" );
+	
+	unsigned int heatmapTex;
+	glGenTextures(1, &heatmapTex);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, heatmapTex);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	// specify two-dimensional heatmapTex image
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, HEATMAP_WIDTH, HEATMAP_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+	/*void glTexImage2D(GLenum target,GLint level,GLint internalformat,GLsizei width,GLsizei height,GLint border,GLenum format,GLenum type,const void * data);*/
+
+	Texture rlHeatmapTex = {
+		.id = heatmapTex,
+		.width = HEATMAP_WIDTH, .height = HEATMAP_HEIGHT,
+		.mipmaps = 0,
+		.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 
+	};
+
+	// Create the uniform buffer for AABB bounds
+	unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &data_bounds, RL_DYNAMIC_COPY);
+
+	rlEnableShader( heatmapLogicProgram );
+	glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
+	rlBindShaderBuffer( positionsSSBO.ssboHandle, 1 );
+	rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32, false );
+	rlComputeShaderDispatch( 1, 1, 1 );
+	glMemoryBarrier( GL_SHADER_IMAGE_ACCESS_BARRIER_BIT );
+	rlDisableShader();
+
+	Camera2D camera = { 0 };
+	camera.zoom = 1.0f;
 
 	// Main game loop
 	while ( !WindowShouldClose() )
 	{
+		// Translate based on mouse right click
+		if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+		{
+			Vector2 delta = GetMouseDelta();
+			delta = Vector2Scale(delta, -1.0f/camera.zoom);
+			camera.target = Vector2Add(camera.target, delta);
+		}
+
+		// Zoom based on mouse wheel
+		float wheel = GetMouseWheelMove();
+		if (wheel != 0)
+		{
+			// Get the world point that is under the mouse
+			Vector2 mouseWorldPos = GetScreenToWorld2D(GetMousePosition(), camera);
+
+			// Set the offset to where the mouse is
+			camera.offset = GetMousePosition();
+
+			// Set the target to match, so that the camera maps the world space point
+			// under the cursor to the screen space point under the cursor at any zoom
+			camera.target = mouseWorldPos;
+
+			// Zoom increment
+			// Uses log scaling to provide consistent zoom speed
+			float scale = 0.2f*wheel;
+			camera.zoom = Clamp(expf(logf(camera.zoom)+scale), 0.125f, 64.0f);
+		}
+
 		BeginDrawing();
 			
 			ClearBackground( RAYWHITE );
+			BeginMode2D( camera );
+				//BeginShaderMode( heatmapRenderShader );
+				DrawTexture( rlHeatmapTex, 0, 0, WHITE );
+				//EndShaderMode();
 
-			DrawText( "Congrats! You created your first window!", 190, 200, 20, LIGHTGRAY );
+				DrawText( "Congrats! You created your first window!", 190, 200, 20, LIGHTGRAY );
+			EndMode2D();
 
 		EndDrawing();
 	}
+
+	// Unload resources
+	rlUnloadShaderBuffer( positionsSSBO.ssboHandle );
+	positionsSSBO.ssboHandle = 0u;
+	st_daUnloadPackedPositionArray( &positionsSSBO.positions );
+
+	rlUnloadUniformBuffer( boundsUBO );
+
+	rlUnloadShaderProgram( heatmapLogicProgram );
+
+	UnloadTexture( rlHeatmapTex );
+	heatmapTex = 0u;
+	//UnloadShader( heatmapRenderShader );
 
 	CloseWindow();
 
