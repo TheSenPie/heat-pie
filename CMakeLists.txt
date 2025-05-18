@@ -24,6 +24,7 @@ else()
 	target_link_libraries( ${PROJECT_NAME} raylib )
 endif()
 
+add_definitions(-DPLATFORM_DESKTOP)
 
 #add_custom_command( TARGET ${PROJECT_NAME} POST_BUILD
 #	COMMAND ${CMAKE_COMMAND} -E copy 
