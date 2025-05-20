@@ -553,8 +553,8 @@ void rlUnloadUniformBuffer(unsigned int uboId)
 
 }
 
-#define HEATMAP_WIDTH 1080 
-#define HEATMAP_HEIGHT 1080
+#define HEATMAP_WIDTH 2048 
+#define HEATMAP_HEIGHT 2048
 
 int main(void)
 {
@@ -614,7 +614,7 @@ int main(void)
 	fprintf( stdout, "Number of invocations in a single local work group that may be dispatched to a compute shader %u", max_compute_work_group_invocations);
 
 	// Load fragment shader for rendering the points
-	//Shader heatmapRenderShader = LoadShader( NULL, "resources/shaders/glsl430/heatmap_render.glsl" );
+	Shader heatmapRenderShader = LoadShader( NULL, "resources/shaders/glsl430/heatmap_render.glsl" );
 	
 	unsigned int heatmapTex;
 	glGenTextures(1, &heatmapTex);
@@ -625,7 +625,7 @@ int main(void)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	// specify two-dimensional heatmapTex image
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, HEATMAP_WIDTH, HEATMAP_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, HEATMAP_WIDTH, HEATMAP_HEIGHT, 0, GL_RED, GL_FLOAT, NULL);
 	/*void glTexImage2D(GLenum target,GLint level,GLint internalformat,GLsizei width,GLsizei height,GLint border,GLenum format,GLenum type,const void * data);*/
 
 	Texture rlHeatmapTex = {
@@ -641,8 +641,8 @@ int main(void)
 	rlEnableShader( heatmapLogicProgram );
 	glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
 	rlBindShaderBuffer( positionsSSBO.ssboHandle, 1 );
-	rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32, false );
-	rlComputeShaderDispatch( 1, 1, 1 );
+	rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32, false );
+	rlComputeShaderDispatch( ( positionsSSBO.positions.count + 128 - 1 ) / 128, 1, 1 );
 	glMemoryBarrier( GL_SHADER_IMAGE_ACCESS_BARRIER_BIT );
 	rlDisableShader();
 
@@ -680,13 +680,14 @@ int main(void)
 			camera.zoom = Clamp(expf(logf(camera.zoom)+scale), 0.125f, 64.0f);
 		}
 
+
 		BeginDrawing();
 			
 			ClearBackground( RAYWHITE );
 			BeginMode2D( camera );
-				//BeginShaderMode( heatmapRenderShader );
+				BeginShaderMode( heatmapRenderShader );
 				DrawTexture( rlHeatmapTex, 0, 0, WHITE );
-				//EndShaderMode();
+				EndShaderMode();
 
 				DrawText( "Congrats! You created your first window!", 190, 200, 20, LIGHTGRAY );
 			EndMode2D();
@@ -705,7 +706,7 @@ int main(void)
 
 	UnloadTexture( rlHeatmapTex );
 	heatmapTex = 0u;
-	//UnloadShader( heatmapRenderShader );
+	UnloadShader( heatmapRenderShader );
 
 	CloseWindow();
 
