@@ -30,6 +30,12 @@
 #include "rlgl.h"
 #include "raymath.h"
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#define RAYGUI_IMPLEMENTATION
+#include "raygui.h"
+#pragma clang diagnostic pop
+
 // Array types
 struct st_packedStringArray
 {
@@ -110,6 +116,20 @@ void st_daUnloadPackedPositionArray( struct st_packedPositionArray* arr )
 	}
 }
 
+void st_daUnloadNumbers( struct st_numbers* arr )
+{
+	assert( arr );
+
+	if ( arr->items != NULL )
+
+	{
+		free( arr->items );
+		arr->items = NULL;
+		arr->count = 0;
+		arr->capacity = 0;
+	}
+}
+
 struct st_vector2d{
 	float x;
 	float y;
@@ -131,6 +151,8 @@ struct st_fileAccess{
 struct st_levelData{
 	unsigned char* name;
 	struct st_packedPositionArray positions;
+	struct st_numbers successfulJumps; // from detach to successful attach
+	int successfulRun;
 };
 
 void st_unloadLevelData( struct st_levelData* data )
@@ -143,6 +165,7 @@ void st_unloadLevelData( struct st_levelData* data )
 		data->name = NULL;
 
 		st_daUnloadPackedPositionArray( &data->positions );
+		st_daUnloadNumbers( &data->successfulJumps );
 	}
 }
 
@@ -272,6 +295,9 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 
 	struct st_levelData currentLevel = {0};
 	bool levelStart = false;
+	int detached = -1; // no detach
+	bool player_death = false;
+	int successfulRun = 0;
 
 	unsigned char* line = NULL;
 	unsigned int rows = 0;
@@ -291,10 +317,14 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 			size_t nameSize = strlen( (const char*) cols.items[2] );
 			currentLevel.name = malloc( nameSize + 1 ); // name
 			strcpy_s( (char*)currentLevel.name, nameSize + 1, (const char*) cols.items[2] );
+			currentLevel.successfulRun = -1;
+
+			detached = 0;
+			player_death = false;
 		}
-		else if ( levelStart )
+		else if( levelStart )
 		{
-			if ( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "start" ) == 0 )
+			if( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "start" ) == 0 )
 			{
 				fprintf(stdout, "ERR Received level:start in the middle of processing level data for %s \n", currentLevel.name );
 
@@ -302,19 +332,30 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 				size_t nameSize = strlen( (const char*) cols.items[2] );
 				currentLevel.name = malloc( nameSize + 1 ); // name
 				strcpy_s( (char*)currentLevel.name, nameSize + 1, (const char*) cols.items[2] );
+				currentLevel.successfulRun = -1;
 
 				st_daUnloadPackedPositionArray( &currentLevel.positions );
+
+				detached = 0;
+				player_death = false;
 			}
-			if ( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "complete" ) == 0 )
+			if( isLevelStatusEvent && strcmp( (const char*)cols.items[3], "complete" ) == 0 )
 			{
+				assert(successfulRun >= 0);
+				currentLevel.successfulRun = successfulRun;
+
 				levelStart = false;
 				st_daAppend( (playerData->levelsData), currentLevel );
 				currentLevel.name = NULL;
 				currentLevel.positions.items = NULL;
 				currentLevel.positions.capacity = 0;
 				currentLevel.positions.count = 0;
+
+				currentLevel.successfulJumps.items = NULL;
+				currentLevel.successfulJumps.capacity = 0;
+				currentLevel.successfulJumps.count = 0;
 			}
-			if ( strcmp( (const char*)cols.items[0], "[pos]" ) == 0 )
+			if( strcmp( (const char*)cols.items[0], "[pos]" ) == 0 )
 			{
 				struct st_vector2d pos = {
 					.x = atof( (const char*)cols.items[2] ),
@@ -322,6 +363,71 @@ static void st_loadUser( const char* name, const char* filePath, struct st_playe
 				};
 
 				st_daAppend( currentLevel.positions, pos );
+
+
+				if( player_death )
+				{
+					// hack because spawn location is different after death
+					Vector2 origin = { 0 };
+					switch( currentLevel.name[0] )
+					{
+						case 'a':
+							origin.x = 256.0f; origin.y = 512.0f;
+							break;
+						case 't':
+							origin.x = 768.0f; origin.y = 384.0f;
+							break;
+						case 'g':
+							origin.x = 2816.0f; origin.y = 1920.0f;
+							break;
+						case 'c':
+							origin.x = 576.0f; origin.y = 384.0f;
+							break;
+						case 'l':
+							origin.x = 539.0f; origin.y = 359.0f;
+							break;
+						case 'v':
+							origin.x = 320.0f; origin.y = 0.0f;
+							break;
+					}
+					if (Vector2Distance((Vector2){pos.x, pos.y}, origin) < 23.0f )
+					{ // probably restarted
+						detached = currentLevel.positions.count - 1;
+						successfulRun = currentLevel.positions.count - 1;
+						player_death = false;
+					}
+				}
+			}
+			if( strcmp( (const char*)cols.items[0], "[sad]") == 0 )
+			{
+				if( strcmp( (const char*)cols.items[2], "attach" ) == 0 )
+				{
+					if( detached == -1 )
+					{
+						fprintf( stderr, "ERR Received attached while being attached %s at %s\n",
+								currentLevel.name,
+								cols.items[1]);
+						exit(0);
+					}
+					st_daAppend( currentLevel.successfulJumps, detached );
+					st_daAppend( currentLevel.successfulJumps, currentLevel.positions.count );
+					detached = -1;
+				}
+
+				if( strcmp( (const char*)cols.items[2], "detach" ) == 0 )
+				{
+					if ( detached >= 0 ) {
+						fprintf( stderr, "ERR Received detached while being detached %s at %s\n",
+								currentLevel.name,
+								cols.items[1]);
+						exit(0);
+					}
+					detached = currentLevel.positions.count;
+				}
+			}
+			if( strcmp( (const char*)cols.items[0], "[pd]") == 0 )
+			{
+				player_death = true;
 			}
 		}
 
@@ -467,7 +573,12 @@ struct st_pointDataFilter {
 	struct st_vector2d socioemotionalRange;
 	struct st_vector2d insightRange;
 
-	const char* const levelName;
+	const char* levelName;
+
+	bool successfulJumpsOnly;
+	bool successfulRunOnly;
+
+	int player; // -1 - none, 0 - all, n - specific user
 };
 
 bool st_testPlayerMotivationAndChallenge( const struct st_playerData* const playerData, struct st_pointDataFilter pointFilter )
@@ -503,6 +614,12 @@ void st_findBounds( const struct st_packedPositionArray points, struct st_aabb* 
 		if ( bounds->bottomRight.x < point.x ) bounds->bottomRight.x = point.x;
 		if ( bounds->bottomRight.y < point.y ) bounds->bottomRight.y = point.y;
 	}
+
+	struct st_vector2d size = {.x = fabsf(bounds->topLeft.x - bounds->bottomRight.x), .y = fabsf(bounds->topLeft.y  - bounds->bottomRight.y) };
+	if( size.x > size.y )
+		bounds->bottomRight.y = bounds->topLeft.y + size.x;
+	else if( size.y > size.x )
+		bounds->bottomRight.x = bounds->topLeft.x + size.y;
 }
 
 // return SSBO id
@@ -510,11 +627,19 @@ struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struc
 {
 	struct st_positionsSSBO res = { 0 };
 
-	for ( unsigned int player_idx = 0; player_idx < players.count; ++player_idx )
+	unsigned int player_idx_start = 0;
+	unsigned int player_idx_end = players.count;
+
+	if ( pointFilter.player > 0 )
+	{
+		player_idx_start = pointFilter.player - 1;
+		player_idx_end = pointFilter.player;
+	}
+
+	for ( unsigned int player_idx = player_idx_start; player_idx < player_idx_end; ++player_idx )
 	{
 		const struct st_playerData* const playerData = &players.items[player_idx];
 		const bool hasMotivationAndChallenge = st_testPlayerMotivationAndChallenge( playerData, pointFilter );
-		assert( hasMotivationAndChallenge ); // TOOD: remove, only for debug
 
 		if ( hasMotivationAndChallenge )
 		{
@@ -523,10 +648,47 @@ struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struc
 			for ( unsigned int lvl_idx = 0; lvl_idx < levelsData->count; ++lvl_idx )
 			{
 				const struct st_levelData* const levelData = &levelsData->items[lvl_idx];
+				assert( levelData->successfulJumps.count % 2 == 0  );
 				if ( strcmp((const char*) levelData->name, pointFilter.levelName) == 0 )
 				{
-					for ( unsigned int pos_idx = 0; pos_idx < levelData->positions.count; ++pos_idx )
-						st_daAppend( res.positions, levelData->positions.items[ pos_idx ] );
+					static unsigned int indexStack[ 1024 ];
+					unsigned int indexStackHead = 0;
+					assert( levelData->successfulJumps.count <= sizeof( indexStack ) / sizeof( unsigned int ) );
+
+					if ( pointFilter.successfulRunOnly )
+					{
+						if ( levelData->successfulRun >= 0 )
+						{
+							indexStack[ indexStackHead++ ] = levelData->successfulRun;
+							indexStack[ indexStackHead++ ] = levelData->positions.count;
+						}
+					}
+					else if ( pointFilter.successfulJumpsOnly )
+					{
+						for ( unsigned int i = 0; i < levelData->successfulJumps.count; i += 2 )
+						{
+							indexStack[ indexStackHead++ ] = levelData->successfulJumps.items[ i ];
+							indexStack[ indexStackHead++ ] = levelData->successfulJumps.items[ i + 1 ];
+						}
+					}
+					else
+					{
+						indexStack[ indexStackHead++ ] = 0;
+						indexStack[ indexStackHead++ ] = levelData->positions.count;
+					}
+
+					unsigned int start = 0;
+					unsigned int end = 0;
+					while ( indexStackHead != 0 )
+					{
+						start = indexStack[indexStackHead - 2];
+						end = indexStack[indexStackHead - 1];
+						indexStackHead -= 2;
+
+						for ( unsigned int pos_idx = start; pos_idx < end; ++pos_idx )
+							st_daAppend( res.positions, levelData->positions.items[ pos_idx ] );
+					}
+
 					break;
 				}
 			}
@@ -540,7 +702,6 @@ struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struc
 	res.ssboHandle = rlLoadShaderBuffer(res.positions.count * sizeof( *res.positions.items ), res.positions.items, RL_DYNAMIC_COPY);
 	return res;
 }
-
 
 // Unload shader storage buffer object (SSBO)
 void rlUnloadUniformBuffer(unsigned int uboId)
@@ -556,14 +717,271 @@ void rlUnloadUniformBuffer(unsigned int uboId)
 #define HEATMAP_WIDTH 2048 
 #define HEATMAP_HEIGHT 2048
 
+#define NUM_LEVELS 6
+
+typedef enum {
+	ARIES = 0,
+	TAURUS,
+	GEMINI,
+	CANCER,
+	LEO,
+	VIRGO
+} LEVEL;
+
+static const char *levelName[] = {
+    "aries_test.tscn",
+    "taurus_test.tscn",
+    "gemini_test.tscn",
+    "cancer_test.tscn",
+    "leo_test.tscn",
+    "virgo_test.tscn"
+};
+
+#define NUM_CATEGORIES 9
+
+typedef enum {
+	// CAH
+	RELATEDNESS = 0,
+	COMPETENCE,
+	IMMERSION,
+	FUN,
+	AUTONOMY,
+
+	// IMG
+	PHYSICAL,
+	ANALYTICAL,
+	SOCIOEMOTIONAL,
+	INSIGHT,
+} CATEGORY;
+
+static const char *categoryName[] = {
+	"Relatedness",
+	"Competence",
+	"Immersion",
+	"Fun",
+	"Autonomy",
+	"Physical",
+	"Analytical",
+	"Socioemotional",
+	"Insight",
+};
+
+
+static const char *categoryNameFormatted[] = {
+	"Relatedness:: %f",
+	"Competence: %f",
+	"Immersion: %f",
+	"Fun: %f",
+	"Autonomy: %f",
+	"Physical: %f",
+	"Analytical: %f",
+	"Socioemotional: %f",
+	"Insight: %f",
+};
+
+bool st_guiCategoryRange(float yOffset, const char* name, char* valueTextMin, char* valueTextMax, struct st_vector2d* range, bool* editModeMin, bool* editModeMax )
+{
+	GuiLabel((Rectangle){ 40, yOffset, 100, 20 }, name );
+
+	const float valueBoxOffset = 20.0f;
+	bool change = false;
+	struct st_vector2d prevRange = *range;
+	if( GuiValueBoxFloat((Rectangle){ 40, yOffset + valueBoxOffset, 40, 20 }, "min", valueTextMin, &range->x, *editModeMin ) )
+	{
+		*editModeMin = !(*editModeMin);
+		range->x = fmin( fmax(0.0, range->x), range->y );
+		change = true;
+	}
+	if( GuiValueBoxFloat((Rectangle){ 120, yOffset + valueBoxOffset, 40, 20 }, "max", valueTextMax, &range->y, *editModeMax ) )
+	{
+		*(editModeMax) = !(*editModeMax);
+		range->y = fmax( range->x, fmin(1.0, range->y) );
+		change = true;
+	}
+	return change;
+}
+
+void st_setupUserListDropdown( char* playersListDropdown, size_t playersListDropdownSize, struct st_playersData playersData )
+{
+	const char all[] = "ALL;";
+	strcpy( playersListDropdown, all );
+
+	unsigned int offset = sizeof(all) - 1;
+
+	for ( unsigned int userIdx = 0; userIdx < playersData.count; ++userIdx )
+	{
+		unsigned const char* playerName = playersData.items[ userIdx ].name;
+		strcpy( playersListDropdown + offset, (const char*)playerName );
+		offset += strlen( (const char*)playerName );
+		*( playersListDropdown + offset ) = ';';
+		offset++;
+	}
+	*( playersListDropdown + offset - 1 ) = '\0';
+}
+
+void st_drawStars( LEVEL currentLevel, struct st_aabb dataBounds )
+{
+	float starRadius = 20.0;
+	Color color = YELLOW;
+	float width = dataBounds.bottomRight.x - dataBounds.topLeft.x;
+	float height = dataBounds.bottomRight.y - dataBounds.topLeft.y;
+	if ( currentLevel == ARIES ) {
+		DrawCircle( (896.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 576.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1856.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 320.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2816.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 192.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (3648.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 448.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+	else if ( currentLevel == TAURUS )
+	{
+		DrawCircle( (1152.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 384.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2048.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 448.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2816.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 512.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (3264.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 896.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2752.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1344.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1152.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1216.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (4672.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 576.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+	else if ( currentLevel == GEMINI)
+	{
+		DrawCircle( (3584.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 2048.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (4160.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 2624.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1984.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 2240.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1024.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1984.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1216.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1152.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1856.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1216.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2816.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1280.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (3584.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1344.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (4160.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 960.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+	else if ( currentLevel == CANCER )
+	{
+		DrawCircle( (1152.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 384.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2048.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 512.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2176.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1408.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2432.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 128.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (3072.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( -512.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+	else if ( currentLevel == LEO )
+	{
+		DrawCircle( (1024.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 512.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1600.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 768.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1920.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1472.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-192.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1536.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-768.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1600.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-448.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 896.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1152.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( -64.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1792.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( -256.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2176.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 64.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+	else if ( currentLevel == VIRGO ) {
+		DrawCircle( (1024.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 512.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (704.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 960.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-384.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1408.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-896.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1344.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-1216.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1664.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (64.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1984.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (-64.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 2368.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1408.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 1088.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1856.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 896.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2368.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 768.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (1600.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 384.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+		DrawCircle( (2112.0 - dataBounds.topLeft.x) / width * HEATMAP_WIDTH, ( 256.0 - dataBounds.topLeft.y ) / height * HEATMAP_HEIGHT, starRadius, color);
+	}
+
+}
+
+int compare(const void *a, const void *b) {
+    float diff = *(float*)a - *(float*)b;
+    return (diff > 0) - (diff < 0); // Correct comparison
+}
+
+void calculateMedians( float* categoryMedians, char categoryTexts[NUM_CATEGORIES][64], struct st_pointDataFilter pointFilter, struct st_playersData players )
+{
+	static float tempScores[NUM_CATEGORIES][64] = {0};
+	unsigned int tempScoresSize = 0;
+
+	struct st_positionsSSBO res = { 0 };
+
+	unsigned int player_idx_start = 0;
+	unsigned int player_idx_end = players.count;
+
+	if ( pointFilter.player > 0 )
+	{
+		player_idx_start = pointFilter.player - 1;
+		player_idx_end = pointFilter.player;
+	}
+
+	for ( unsigned int player_idx = player_idx_start; player_idx < player_idx_end; ++player_idx )
+	{
+		const struct st_playerData* const playerData = &players.items[player_idx];
+		const bool hasMotivationAndChallenge = st_testPlayerMotivationAndChallenge( playerData, pointFilter );
+
+		if ( hasMotivationAndChallenge )
+		{
+			const struct st_levelsData* const levelsData = &playerData->levelsData;
+
+			for ( unsigned int lvl_idx = 0; lvl_idx < levelsData->count; ++lvl_idx )
+			{
+				const struct st_levelData* const levelData = &levelsData->items[lvl_idx];
+				assert( levelData->successfulJumps.count % 2 == 0  );
+				if ( strcmp((const char*) levelData->name, pointFilter.levelName) == 0 )
+				{
+					tempScores[RELATEDNESS][tempScoresSize] = playerData->relatedness;
+					tempScores[COMPETENCE][tempScoresSize] = playerData->competence;
+					tempScores[IMMERSION][tempScoresSize] = playerData->immersion;
+					tempScores[FUN][tempScoresSize] = playerData->fun;
+					tempScores[AUTONOMY][tempScoresSize] = playerData->autonomy;
+					tempScores[PHYSICAL][tempScoresSize] = playerData->physical;
+					tempScores[ANALYTICAL][tempScoresSize] = playerData->analytical;
+					tempScores[SOCIOEMOTIONAL][tempScoresSize] = playerData->socioemotional;
+					tempScores[INSIGHT][tempScoresSize] = playerData->insight;
+					tempScoresSize++;
+					break;
+				}
+			}
+		}
+	}
+
+	if (tempScoresSize == 0)
+	{
+		tempScores[RELATEDNESS][tempScoresSize] = 0.0f;
+		tempScores[COMPETENCE][tempScoresSize] = 0.0f;
+		tempScores[IMMERSION][tempScoresSize] = 0.0f;
+		tempScores[FUN][tempScoresSize] = 0.0f;
+		tempScores[AUTONOMY][tempScoresSize] = 0.0f;
+		tempScores[PHYSICAL][tempScoresSize] = 0.0f;
+		tempScores[ANALYTICAL][tempScoresSize] = 0.0f;
+		tempScores[SOCIOEMOTIONAL][tempScoresSize] = 0.0f;
+		tempScores[INSIGHT][tempScoresSize] = 0.0f;
+		tempScoresSize++;
+	}
+
+	for ( unsigned int category_idx = 0; category_idx < NUM_CATEGORIES; ++category_idx )
+	{
+		qsort (tempScores[category_idx], tempScoresSize, sizeof(float), compare);
+		categoryMedians[ category_idx ] = tempScoresSize % 2 == 1 ? tempScores[category_idx][tempScoresSize/2] : (tempScores[category_idx][tempScoresSize/2 - 1] + tempScores[category_idx][tempScoresSize/2]) / 2.0 ;
+		memset( categoryTexts[ category_idx ], '\0', 64 );
+		sprintf(categoryTexts[ category_idx ], categoryNameFormatted[ category_idx ], categoryMedians[ category_idx ]);
+	}
+}
+
 int main(void)
 {
 	const unsigned int screenWidth = 800u;
 	const unsigned int screenHeight = 640u;
 
+	SetConfigFlags( FLAG_WINDOW_RESIZABLE );
 	InitWindow(screenWidth, screenHeight, "raylib [core] example - basic window" );
 
 	SetTargetFPS( 60u );
+
+	unsigned int currentLevel = ARIES;
+	bool levelReload = false;
+
+	Rectangle toggleRecs[NUM_LEVELS] = { 0 };
+	int mouseHoverRec = -1;
+
+	for (int i = 0; i < NUM_LEVELS; i++) toggleRecs[i] = (Rectangle){ 40.0f, (float)(10 + 32*i), 150.0f, 30.0f };
 
 	struct st_playersData playersData = st_loadCsv();
 	struct st_pointDataFilter pointFilter = {
@@ -576,13 +994,38 @@ int main(void)
 		.analyticalRange = {0.0, 1.0},
 		.socioemotionalRange = {0.0, 1.0},
 		.insightRange = {0.0, 1.0},
-		.levelName = "cancer_test.tscn"
+		.levelName = levelName[ currentLevel ],
+		.successfulJumpsOnly = false
 	};
 
+	struct st_vector2d* ranges[ NUM_CATEGORIES ] = {0};
+	ranges[ RELATEDNESS ] = &pointFilter.relatednessRange;
+	ranges[ COMPETENCE ] = &pointFilter.competenceRange;
+	ranges[ IMMERSION ] = &pointFilter.immersionRange;
+	ranges[ FUN ] = &pointFilter.funRange;
+	ranges[ AUTONOMY ] = &pointFilter.autonomyRange;
+	ranges[ PHYSICAL ] = &pointFilter.physicalRange;
+	ranges[ ANALYTICAL ] = &pointFilter.analyticalRange;
+	ranges[ SOCIOEMOTIONAL ] = &pointFilter.socioemotionalRange;
+	ranges[ INSIGHT ] = &pointFilter.insightRange;
+	char valueTexts[ NUM_CATEGORIES * 2 ][ 64 ] = {0};
+	bool editMode[ NUM_CATEGORIES * 2 ] = {0};
+
+	char playersListDropdown[1024] = {0};
+	st_setupUserListDropdown( playersListDropdown, sizeof( playersListDropdown ), playersData );
+	int dropdownActive = 0;
+	bool dropdownEditMode = false;
+
+	Vector2 viewScroll = {0};
+	Rectangle scrollContent = {0};
+
+	float categoryMedians[NUM_CATEGORIES] = {0};
+	char categoryTexts[NUM_CATEGORIES][64];
+	calculateMedians( categoryMedians, categoryTexts, pointFilter, playersData );
+
 	struct st_positionsSSBO positionsSSBO = st_loadPointBuffer( playersData, pointFilter );
-	struct st_aabb data_bounds = {0};
-	st_findBounds( positionsSSBO.positions, &data_bounds );
-	st_printAABBDebug( data_bounds );
+	struct st_aabb dataBounds = {0};
+	st_findBounds( positionsSSBO.positions, &dataBounds );
 
 	// Load compute shader and process points to write to render buffer
 	char* heatmapLogicCode = LoadFileText( "resources/shaders/glsl430/heatmap.glsl" );
@@ -596,7 +1039,8 @@ int main(void)
 	int max_compute_work_group_size[3];
 	int max_compute_work_group_invocations;
 
-	for (int idx = 0; idx < 3; idx++) {
+	for (int idx = 0; idx < 3; idx++)
+	{
 		glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, idx, &max_compute_work_group_count[idx]);
 		glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, idx, &max_compute_work_group_size[idx]);
 	}
@@ -636,7 +1080,7 @@ int main(void)
 	};
 
 	// Create the uniform buffer for AABB bounds
-	unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &data_bounds, RL_DYNAMIC_COPY);
+	unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &dataBounds, RL_DYNAMIC_COPY);
 
 	rlEnableShader( heatmapLogicProgram );
 	glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
@@ -649,11 +1093,15 @@ int main(void)
 	Camera2D camera = { 0 };
 	camera.zoom = 1.0f;
 
+	RenderTexture2D saveTargetTex = LoadRenderTexture( HEATMAP_WIDTH, HEATMAP_HEIGHT );
+
 	// Main game loop
 	while ( !WindowShouldClose() )
 	{
+		Rectangle scrollBounds = { GetScreenWidth() - 120, 10, 110, 200 };
+
 		// Translate based on mouse right click
-		if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
+		if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !CheckCollisionPointRec( GetMousePosition(), scrollBounds))
 		{
 			Vector2 delta = GetMouseDelta();
 			delta = Vector2Scale(delta, -1.0f/camera.zoom);
@@ -662,7 +1110,7 @@ int main(void)
 
 		// Zoom based on mouse wheel
 		float wheel = GetMouseWheelMove();
-		if (wheel != 0)
+		if (wheel != 0 && !CheckCollisionPointRec( GetMousePosition(), scrollBounds) )
 		{
 			// Get the world point that is under the mouse
 			Vector2 mouseWorldPos = GetScreenToWorld2D(GetMousePosition(), camera);
@@ -680,22 +1128,139 @@ int main(void)
 			camera.zoom = Clamp(expf(logf(camera.zoom)+scale), 0.125f, 64.0f);
 		}
 
+		// Mouse toggle group logic
+		for (int i = 0; i < NUM_LEVELS; i++)
+		{
+		    if (CheckCollisionPointRec(GetMousePosition(), toggleRecs[i]))
+		    {
+			mouseHoverRec = i;
+
+			if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
+			{
+			    currentLevel = i;
+			    levelReload = true;
+			}
+			break;
+		    }
+		    else mouseHoverRec = -1;
+		}
+
+		// Reload level when required
+		if (levelReload)
+		{
+			calculateMedians( categoryMedians, categoryTexts, pointFilter, playersData );
+
+			rlUnloadShaderBuffer( positionsSSBO.ssboHandle );
+			positionsSSBO.ssboHandle = 0u;
+			st_daUnloadPackedPositionArray( &positionsSSBO.positions );
+
+			pointFilter.levelName = levelName[ currentLevel ];
+
+			positionsSSBO = st_loadPointBuffer( playersData, pointFilter );
+			dataBounds.topLeft = st_VECTOR2D_ZERO; dataBounds.bottomRight = st_VECTOR2D_ZERO;
+			st_findBounds( positionsSSBO.positions, &dataBounds );
+
+			// Create the uniform buffer for AABB bounds
+			unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &dataBounds, RL_DYNAMIC_COPY);
+
+			float zeroData = 0.0f;
+			glClearTexImage( heatmapTex, 0, GL_RED, GL_FLOAT, &zeroData);
+
+			rlEnableShader( heatmapLogicProgram );
+			glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
+			rlBindShaderBuffer( positionsSSBO.ssboHandle, 1 );
+			rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32, false );
+			rlComputeShaderDispatch( ( positionsSSBO.positions.count + 128 - 1 ) / 128, 1, 1 );
+			glMemoryBarrier( GL_SHADER_IMAGE_ACCESS_BARRIER_BIT );
+			rlDisableShader();
+
+			levelReload = false;
+		}
 
 		BeginDrawing();
 			
 			ClearBackground( RAYWHITE );
-			BeginMode2D( camera );
+
+			// Draw rectangles
+			for (int i = 0; i < NUM_LEVELS; i++)
+			{
+				DrawRectangleRec(toggleRecs[i], ((i == currentLevel) || (i == mouseHoverRec)) ? SKYBLUE : LIGHTGRAY);
+				DrawRectangleLines((int)toggleRecs[i].x, (int) toggleRecs[i].y, (int) toggleRecs[i].width, (int) toggleRecs[i].height, ((i == currentLevel) || (i == mouseHoverRec)) ? BLUE : GRAY);
+				DrawText( levelName[i], (int)( toggleRecs[i].x + toggleRecs[i].width/2.0 - MeasureText( levelName[i], 10)/2.0), (int) toggleRecs[i].y + 11, 10, ((i == currentLevel) || (i == mouseHoverRec) ) ? DARKBLUE : DARKGRAY);
+			}
+
+			// Draw GUI controls
+			//------------------------------------------------------------------------------
+			float categoryControlOffset = 220;
+			bool controlChanged = false;
+			for ( unsigned i = 0; i < NUM_CATEGORIES; ++i )
+			{
+				controlChanged |= st_guiCategoryRange(categoryControlOffset, categoryName[ i ], valueTexts[ 2u * i ], valueTexts[ 2u * i + 1], ranges[i], &editMode[ 2u * i ], &editMode[ 2u * i + 1 ] );
+				categoryControlOffset += 40;
+			}
+
+			controlChanged |= GuiCheckBox((Rectangle){ 40, categoryControlOffset + 10, 20, 20 }, "Show successful jumps only", &pointFilter.successfulJumpsOnly);
+
+			controlChanged |= GuiCheckBox((Rectangle){ 40, categoryControlOffset + 30, 20, 20 }, "Show successful runs only", &pointFilter.successfulRunOnly);
+
+			if ( controlChanged )
+				levelReload = true;
+
+			if( GuiButton((Rectangle) { GetScreenWidth() - 120, GetScreenHeight() - 40, 100, 20  }, "Save") )
+			{
+
+				float zeroData[4] = {0};
+				glClearTexImage( saveTargetTex.texture.id, 0, GL_RGBA, GL_FLOAT, &zeroData);
+
+				BeginTextureMode( saveTargetTex );
+				st_drawStars( currentLevel, dataBounds );
 				BeginShaderMode( heatmapRenderShader );
 				DrawTexture( rlHeatmapTex, 0, 0, WHITE );
 				EndShaderMode();
+				EndTextureMode();
 
-				DrawText( "Congrats! You created your first window!", 190, 200, 20, LIGHTGRAY );
+				Image saveTargetImg = LoadImageFromTexture( saveTargetTex.texture );
+				ImageFlipVertical( &saveTargetImg );
+				ExportImage(saveTargetImg, "output.png");
+				UnloadImage( saveTargetImg );
+			}
+
+			GuiScrollPanel( scrollBounds, NULL, (Rectangle){ GetScreenWidth() - 120, 10, 100, 800 }, &viewScroll, &scrollContent );
+			BeginScissorMode( scrollContent.x, scrollContent.y, scrollContent.width, scrollContent.height );
+
+			int prevPlayer = pointFilter.player;
+			if ( GuiDropdownBox((Rectangle){ scrollBounds.x, scrollBounds.y + viewScroll.y, 100, 20 }, playersListDropdown, &pointFilter.player, dropdownEditMode) )
+			{
+				dropdownEditMode = !dropdownEditMode;
+				viewScroll.y = 0;
+
+				if ( prevPlayer != pointFilter.player )
+					levelReload = true;
+			}
+			EndScissorMode();
+
+			for ( unsigned int category_idx = RELATEDNESS; category_idx <= AUTONOMY; ++category_idx )
+				GuiLabel((Rectangle){200, 10 + category_idx * 10.0 , 200, 10}, categoryTexts[category_idx]);
+
+			for ( unsigned int category_idx = PHYSICAL; category_idx <= INSIGHT; ++category_idx )
+				GuiLabel((Rectangle){400, 10 + ( category_idx - PHYSICAL ) * 10.0 , 200, 10}, categoryTexts[category_idx]);
+
+			//------------------------------------------------------------------------------
+
+			BeginMode2D( camera );
+				st_drawStars( currentLevel, dataBounds );
+
+				BeginShaderMode( heatmapRenderShader );
+				DrawTexture( rlHeatmapTex, 0, 0, WHITE );
+				EndShaderMode();
 			EndMode2D();
 
 		EndDrawing();
 	}
 
 	// Unload resources
+	UnloadRenderTexture( saveTargetTex );
+
 	rlUnloadShaderBuffer( positionsSSBO.ssboHandle );
 	positionsSSBO.ssboHandle = 0u;
 	st_daUnloadPackedPositionArray( &positionsSSBO.positions );
