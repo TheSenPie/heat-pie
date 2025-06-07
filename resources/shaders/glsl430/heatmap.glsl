@@ -20,7 +20,7 @@ layout(std430, binding = 1) readonly restrict buffer pointsBuffer {
 layout (r32f, binding = 2) coherent restrict uniform image2D plotOutput;
 
 // Constants
-const float bandwidth = 5.0;  // Gaussian sigma
+const float bandwidth = 10.0;  // Gaussian sigma
 const float PI = 3.14159265359;
 const float CUTOFF_MULTIPLIER = 20.0;  // Points beyond 3*sigma have negligible contribution
 

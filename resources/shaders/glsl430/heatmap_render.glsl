@@ -29,7 +29,7 @@ vec3 hsv2rgb(vec3 c) {
 
 void main()
 {
-    const float exposure = 1.0;
+    const float exposure = 2.0;
     const float gamma = 2.2;
     
     // Get the density value from the red channel
