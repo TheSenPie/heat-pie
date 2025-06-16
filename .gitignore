@@ -1,5 +1,6 @@
 # ninja build files
 build/
+build-msvc/
 
 # clangd
 .cache/

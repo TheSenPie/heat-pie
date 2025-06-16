@@ -703,6 +703,19 @@ struct st_positionsSSBO st_loadPointBuffer( struct st_playersData players, struc
 	return res;
 }
 
+struct st_positionsSSBO st_loadPointBufferFromLevel( const struct st_levelData* const levelData )
+{
+	struct st_positionsSSBO res = { 0 };
+
+
+	for ( unsigned int pos_idx = 0; pos_idx < levelData->positions.count; ++pos_idx )
+		st_daAppend( res.positions, levelData->positions.items[ pos_idx ] );
+
+	st_daShrinkToFit( res.positions );
+	res.ssboHandle = rlLoadShaderBuffer(res.positions.count * sizeof( *res.positions.items ), res.positions.items, RL_DYNAMIC_COPY);
+	return res;
+}
+
 // Unload shader storage buffer object (SSBO)
 void rlUnloadUniformBuffer(unsigned int uboId)
 {
@@ -1095,122 +1108,62 @@ int main(void)
 
 	RenderTexture2D saveTargetTex = LoadRenderTexture( HEATMAP_WIDTH, HEATMAP_HEIGHT );
 
-	// Main game loop
-	while ( !WindowShouldClose() )
+	for ( unsigned int player_idx = 0; player_idx < playersData.count; ++player_idx )
 	{
-		Rectangle scrollBounds = { GetScreenWidth() - 120, 10, 110, 200 };
+		const struct st_playerData* const playerData = &playersData.items[player_idx];
+		const struct st_levelsData* const levelsData = &playerData->levelsData;
 
-		// Translate based on mouse right click
-		if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !CheckCollisionPointRec( GetMousePosition(), scrollBounds))
+		for ( unsigned int lvl_idx = 0; lvl_idx < levelsData->count; ++lvl_idx )
 		{
-			Vector2 delta = GetMouseDelta();
-			delta = Vector2Scale(delta, -1.0f/camera.zoom);
-			camera.target = Vector2Add(camera.target, delta);
-		}
+			const struct st_levelData* const levelData = &levelsData->items[lvl_idx];
 
-		// Zoom based on mouse wheel
-		float wheel = GetMouseWheelMove();
-		if (wheel != 0 && !CheckCollisionPointRec( GetMousePosition(), scrollBounds) )
-		{
-			// Get the world point that is under the mouse
-			Vector2 mouseWorldPos = GetScreenToWorld2D(GetMousePosition(), camera);
-
-			// Set the offset to where the mouse is
-			camera.offset = GetMousePosition();
-
-			// Set the target to match, so that the camera maps the world space point
-			// under the cursor to the screen space point under the cursor at any zoom
-			camera.target = mouseWorldPos;
-
-			// Zoom increment
-			// Uses log scaling to provide consistent zoom speed
-			float scale = 0.2f*wheel;
-			camera.zoom = Clamp(expf(logf(camera.zoom)+scale), 0.125f, 64.0f);
-		}
-
-		// Mouse toggle group logic
-		for (int i = 0; i < NUM_LEVELS; i++)
-		{
-		    if (CheckCollisionPointRec(GetMousePosition(), toggleRecs[i]))
-		    {
-			mouseHoverRec = i;
-
-			if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
-			{
-			    currentLevel = i;
-			    levelReload = true;
-			}
-			break;
-		    }
-		    else mouseHoverRec = -1;
-		}
-
-		// Reload level when required
-		if (levelReload)
-		{
-			calculateMedians( categoryMedians, categoryTexts, pointFilter, playersData );
-
-			rlUnloadShaderBuffer( positionsSSBO.ssboHandle );
-			positionsSSBO.ssboHandle = 0u;
-			st_daUnloadPackedPositionArray( &positionsSSBO.positions );
-
-			pointFilter.levelName = levelName[ currentLevel ];
-
-			positionsSSBO = st_loadPointBuffer( playersData, pointFilter );
-			dataBounds.topLeft = st_VECTOR2D_ZERO; dataBounds.bottomRight = st_VECTOR2D_ZERO;
-			st_findBounds( positionsSSBO.positions, &dataBounds );
-
-			// Create the uniform buffer for AABB bounds
-			unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &dataBounds, RL_DYNAMIC_COPY);
-
-			float zeroData = 0.0f;
-			glClearTexImage( heatmapTex, 0, GL_RED, GL_FLOAT, &zeroData);
-
-			rlEnableShader( heatmapLogicProgram );
-			glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
-			rlBindShaderBuffer( positionsSSBO.ssboHandle, 1 );
-			rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32, false );
-			rlComputeShaderDispatch( ( positionsSSBO.positions.count + 128 - 1 ) / 128, 1, 1 );
-			glMemoryBarrier( GL_SHADER_IMAGE_ACCESS_BARRIER_BIT );
-			rlDisableShader();
-
-			levelReload = false;
-		}
-
-		BeginDrawing();
-			
-			ClearBackground( RAYWHITE );
-
-			// Draw rectangles
-			for (int i = 0; i < NUM_LEVELS; i++)
-			{
-				DrawRectangleRec(toggleRecs[i], ((i == currentLevel) || (i == mouseHoverRec)) ? SKYBLUE : LIGHTGRAY);
-				DrawRectangleLines((int)toggleRecs[i].x, (int) toggleRecs[i].y, (int) toggleRecs[i].width, (int) toggleRecs[i].height, ((i == currentLevel) || (i == mouseHoverRec)) ? BLUE : GRAY);
-				DrawText( levelName[i], (int)( toggleRecs[i].x + toggleRecs[i].width/2.0 - MeasureText( levelName[i], 10)/2.0), (int) toggleRecs[i].y + 11, 10, ((i == currentLevel) || (i == mouseHoverRec) ) ? DARKBLUE : DARKGRAY);
-			}
-
-			// Draw GUI controls
-			//------------------------------------------------------------------------------
-			float categoryControlOffset = 220;
-			bool controlChanged = false;
-			for ( unsigned i = 0; i < NUM_CATEGORIES; ++i )
-			{
-				controlChanged |= st_guiCategoryRange(categoryControlOffset, categoryName[ i ], valueTexts[ 2u * i ], valueTexts[ 2u * i + 1], ranges[i], &editMode[ 2u * i ], &editMode[ 2u * i + 1 ] );
-				categoryControlOffset += 40;
-			}
-
-			controlChanged |= GuiCheckBox((Rectangle){ 40, categoryControlOffset + 10, 20, 20 }, "Show successful jumps only", &pointFilter.successfulJumpsOnly);
-
-			controlChanged |= GuiCheckBox((Rectangle){ 40, categoryControlOffset + 30, 20, 20 }, "Show successful runs only", &pointFilter.successfulRunOnly);
-
-			if ( controlChanged )
-				levelReload = true;
-
-			if( GuiButton((Rectangle) { GetScreenWidth() - 120, GetScreenHeight() - 40, 100, 20  }, "Save") )
+			if ( levelData->positions.count > 0 )
 			{
 
-				float zeroData[4] = {0};
-				glClearTexImage( saveTargetTex.texture.id, 0, GL_RGBA, GL_FLOAT, &zeroData);
+				static char outputName[256] = {0};
+				unsigned int playerNameSize = strlen( (const char*) playerData->name);
+				unsigned int levelNameSize = strlen( (const char*)levelData->name);
+				unsigned int underscoreSize = 1u;
+				unsigned int extensionSize = 4u;
+				unsigned int nullTerminatorSize = 1u;
+				unsigned int outputNameLength = playerNameSize + levelNameSize + underscoreSize + nullTerminatorSize;
+				assert( outputNameLength <= 256u );
+				strcpy_s( outputName, outputNameLength, (char*)playerData->name );
+				outputName[ playerNameSize ] = '_';
+				strcpy_s( &outputName[ playerNameSize + underscoreSize ], outputNameLength, (char*)levelData->name );
+				strcpy_s( &outputName[ playerNameSize + underscoreSize + levelNameSize ], outputNameLength, ".png" );
+				outputName[ playerNameSize + underscoreSize + levelNameSize + extensionSize ] = '\0';
+
+				rlUnloadShaderBuffer( positionsSSBO.ssboHandle );
+				positionsSSBO.ssboHandle = 0u;
+				st_daUnloadPackedPositionArray( &positionsSSBO.positions );
+
+				pointFilter.levelName = levelName[ lvl_idx ];
+
+				positionsSSBO = st_loadPointBufferFromLevel( levelData );
+				dataBounds.topLeft = st_VECTOR2D_ZERO; dataBounds.bottomRight = st_VECTOR2D_ZERO;
+				st_findBounds( positionsSSBO.positions, &dataBounds );
+
+				// Create the uniform buffer for AABB bounds
+				unsigned int boundsUBO = rlLoadShaderBuffer(sizeof(struct st_aabb), &dataBounds, RL_DYNAMIC_COPY);
+
+				float zeroData = 0.0f;
+				glClearTexImage( heatmapTex, 0, GL_RED, GL_FLOAT, &zeroData);
+
+				rlEnableShader( heatmapLogicProgram );
+				glBindBufferBase( GL_UNIFORM_BUFFER, 0, boundsUBO );
+				rlBindShaderBuffer( positionsSSBO.ssboHandle, 1 );
+				rlBindImageTexture( heatmapTex, 2, RL_PIXELFORMAT_UNCOMPRESSED_R32, false );
+				rlComputeShaderDispatch( ( positionsSSBO.positions.count + 128 - 1 ) / 128, 1, 1 );
+				glMemoryBarrier( GL_SHADER_IMAGE_ACCESS_BARRIER_BIT );
+				rlDisableShader();
+
+
+				BeginDrawing();
+				ClearBackground( RAYWHITE );
+
+				float zeroDataRGBA[4] = {0};
+				glClearTexImage( saveTargetTex.texture.id, 0, GL_RGBA, GL_FLOAT, &zeroDataRGBA );
 
 				BeginTextureMode( saveTargetTex );
 				st_drawStars( currentLevel, dataBounds );
@@ -1221,41 +1174,12 @@ int main(void)
 
 				Image saveTargetImg = LoadImageFromTexture( saveTargetTex.texture );
 				ImageFlipVertical( &saveTargetImg );
-				ExportImage(saveTargetImg, "output.png");
+				ExportImage(saveTargetImg, outputName );
 				UnloadImage( saveTargetImg );
+
+				EndDrawing();
 			}
-
-			GuiScrollPanel( scrollBounds, NULL, (Rectangle){ GetScreenWidth() - 120, 10, 100, 800 }, &viewScroll, &scrollContent );
-			BeginScissorMode( scrollContent.x, scrollContent.y, scrollContent.width, scrollContent.height );
-
-			int prevPlayer = pointFilter.player;
-			if ( GuiDropdownBox((Rectangle){ scrollBounds.x, scrollBounds.y + viewScroll.y, 100, 20 }, playersListDropdown, &pointFilter.player, dropdownEditMode) )
-			{
-				dropdownEditMode = !dropdownEditMode;
-				viewScroll.y = 0;
-
-				if ( prevPlayer != pointFilter.player )
-					levelReload = true;
-			}
-			EndScissorMode();
-
-			for ( unsigned int category_idx = RELATEDNESS; category_idx <= AUTONOMY; ++category_idx )
-				GuiLabel((Rectangle){200, 10 + category_idx * 10.0 , 200, 10}, categoryTexts[category_idx]);
-
-			for ( unsigned int category_idx = PHYSICAL; category_idx <= INSIGHT; ++category_idx )
-				GuiLabel((Rectangle){400, 10 + ( category_idx - PHYSICAL ) * 10.0 , 200, 10}, categoryTexts[category_idx]);
-
-			//------------------------------------------------------------------------------
-
-			BeginMode2D( camera );
-				st_drawStars( currentLevel, dataBounds );
-
-				BeginShaderMode( heatmapRenderShader );
-				DrawTexture( rlHeatmapTex, 0, 0, WHITE );
-				EndShaderMode();
-			EndMode2D();
-
-		EndDrawing();
+		}
 	}
 
 	// Unload resources

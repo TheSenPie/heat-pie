@@ -9,7 +9,11 @@ set_target_properties( raylib
 	IMPORTED_LOCATION raylib.lib 
 	IMPORTED_IMPLIB raylib.lib ) 
 
-add_executable( ${PROJECT_NAME} src/hello.c )
+add_executable( ${PROJECT_NAME} src/heatpie.c )
+
+add_library( StringTheoryDataLoader string_theory.h  plugins/string_theory-data_loader.c )
+
+add_library( StringTheoryGui string_theory plugins/string_theory-gui.c )
 
 if(MSVC)
 	target_compile_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
