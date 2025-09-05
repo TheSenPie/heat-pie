@@ -19,9 +19,9 @@ layout(std430, binding = 1) readonly restrict buffer pointsBuffer {
 layout(r32ui, binding = 2) coherent restrict uniform uimage2D plotOutput;
 
 // Constants
-const float sigma = 100.0;  // Gaussian sigma
+const float sigma = 10.0;  // Gaussian sigma
 const float PI = 3.14159265359;
-const float CUTOFF_MULTIPLIER = 3.0;  // Points beyond 3*sigma have negligible contribution
+const float CUTOFF_MULTIPLIER = 3.0*sigma;  // Points beyond 3*sigma have negligible contribution
 
 void main() {
   // Each thread processes one point
