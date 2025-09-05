@@ -6,8 +6,8 @@
 
 #include "string_theory.h"
 
-#include <corecrt_search.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 //#if defined(PLATFORM_DESKTOP) || defined(PLATFORM_DESKTOP_SDL)
 //    #if defined(GRAPHICS_API_OPENGL_ES2)

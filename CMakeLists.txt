@@ -4,12 +4,10 @@ project( PlayerPositionPlot LANGUAGES C )
 
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 
-add_library( raylib SHARED IMPORTED )
-
-set_target_properties( raylib 
-  PROPERTIES LINKER_LANGUAGE C
-  IMPORTED_LOCATION raylib.lib 
-  IMPORTED_IMPLIB raylib.lib ) 
+add_library( raylib STATIC IMPORTED )
+set_target_properties( raylib PROPERTIES
+    IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/raylib-5.5_win64_mingw20241203/lib/raylib.a
+)
 
 add_executable( ${PROJECT_NAME} src/heatpie.c )
 
@@ -23,7 +21,7 @@ add_library( StringTheoryPlugin SHARED
 target_include_directories( StringTheoryPlugin PUBLIC
   "${CMAKE_CURRENT_BINARY_DIR}"
 
-  raylib-5.5_win64_msvc16/include/
+  raylib-5.5_win64_mingw20241203/include/
 )
 
 include(GenerateExportHeader)
@@ -34,7 +32,7 @@ if(MSVC)
   target_link_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
 endif()
 
-target_include_directories( ${PROJECT_NAME} PUBLIC raylib-5.5_win64_msvc16/include/ )
+target_include_directories( ${PROJECT_NAME} PUBLIC raylib-5.5_win64_mingw20241203/include/ )
 
 if(WIN32)
   target_link_libraries( StringTheoryPlugin PRIVATE raylib winmm gdi32 )
