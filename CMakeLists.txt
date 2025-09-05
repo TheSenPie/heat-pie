@@ -2,43 +2,57 @@ cmake_minimum_required( VERSION 3.30 )
 
 project( PlayerPositionPlot LANGUAGES C )
 
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+
 add_library( raylib SHARED IMPORTED )
 
 set_target_properties( raylib 
-	PROPERTIES LINKER_LANGUAGE C
-	IMPORTED_LOCATION raylib.lib 
-	IMPORTED_IMPLIB raylib.lib ) 
+  PROPERTIES LINKER_LANGUAGE C
+  IMPORTED_LOCATION raylib.lib 
+  IMPORTED_IMPLIB raylib.lib ) 
 
 add_executable( ${PROJECT_NAME} src/heatpie.c )
 
-add_library( StringTheoryDataLoader string_theory.h  plugins/string_theory-data_loader.c )
+add_library( StringTheoryPlugin SHARED
+  plugins/string_theory.h
+  plugins/string_theory.c
+  plugins/string_theory-data_loader.c
+  plugins/string_theory-gui.c
+)
 
-add_library( StringTheoryGui string_theory plugins/string_theory-gui.c )
+target_include_directories( StringTheoryPlugin PUBLIC
+  "${CMAKE_CURRENT_BINARY_DIR}"
+
+  raylib-5.5_win64_msvc16/include/
+)
+
+include(GenerateExportHeader)
+generate_export_header(StringTheoryPlugin)
 
 if(MSVC)
-	target_compile_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
-	target_link_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
+  target_compile_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
+  target_link_options(${PROJECT_NAME} PRIVATE /fsanitize=address )
 endif()
 
 target_include_directories( ${PROJECT_NAME} PUBLIC raylib-5.5_win64_msvc16/include/ )
 
 if(WIN32)
-	target_link_libraries( ${PROJECT_NAME} raylib winmm gdi32 )
+  target_link_libraries( StringTheoryPlugin PRIVATE raylib winmm gdi32 )
+  target_link_libraries( ${PROJECT_NAME}
+  PUBLIC
+    raylib winmm gdi32 
+  PRIVATE
+    StringTheoryPlugin
+  )
 else()
-	target_link_libraries( ${PROJECT_NAME} raylib )
+  target_link_libraries( StringTheoryPlugin PRIVATE raylib )
+  target_link_libraries( ${PROJECT_NAME}
+  PUBLIC
+    raylib
+  PRIVATE
+    StringTheoryPlugin
+  )
 endif()
 
 add_definitions(-DPLATFORM_DESKTOP)
-
-#add_custom_command( TARGET ${PROJECT_NAME} POST_BUILD
-#	COMMAND ${CMAKE_COMMAND} -E copy 
-#	"${PROJECT_SOURCE_DIR}/raylib-5.5_win64_msvc16/lib/raylib.dll"
-#	"${PROJECT_SOURCE_DIR}/raylib-5.5_win64_msvc16/lib/raylib.lib"
-#	"${PROJECT_SOURCE_DIR}/raylib-5.5_win64_msvc16/lib/raylibdll.lib"
-#	$<TARGET_FILE_DIR:${PROJECT_NAME}>
-#	BYPRODUCTS 
-#	"raylib.dll"
-#        "raylib.lib"
-#        "raylibdll.lib"
-#	COMMENT "Copying raylib libs to output directory" )
 

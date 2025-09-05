@@ -2,7 +2,7 @@
 in vec2 fragTexCoord;
 in vec4 fragColor;
 out vec4 finalColor;
-uniform sampler2D texture0;
+uniform usampler2D texture0;
 uniform vec4 colDiffuse;
 
 //void main()
@@ -33,8 +33,8 @@ void main()
     const float gamma = 2.2;
     
     // Get the density value from the red channel
-    float density = texture(texture0, fragTexCoord).r;
-    
+    float density = float( texture( texture0, fragTexCoord ).r ) / 10000.0;
+  
     // Apply tone mapping to preserve dynamic range
     float mapped = 1.0 - exp(-density * exposure);
     
